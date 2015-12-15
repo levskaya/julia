@@ -1,5 +1,7 @@
 .. _man-variables-and-scoping:
 
+.. currentmodule:: Base
+
 ********************
  Scope of Variables
 ********************
@@ -24,18 +26,58 @@ The constructs introducing such blocks are:
 -  ``for`` loops
 -  ``try`` blocks
 -  ``catch`` blocks
+-  ``finally`` blocks
 -  ``let`` blocks
 -  ``type`` blocks.
 
 Notably missing from this list are
-:ref:`begin blocks <man-compound-expressions>`, which do
+:ref:`begin blocks <man-compound-expressions>` and :ref:`if blocks <man-conditional-evaluation>`, which do
 *not* introduce new scope blocks.
 
 Certain constructs introduce new variables into the current innermost
 scope. When a variable is introduced into a scope, it is also inherited
 by all inner scopes unless one of those inner scopes explicitly
-overrides it. These constructs which introduce new variables into the
-current scope are as follows:
+overrides it.
+
+Julia uses `lexical scoping <https://en.wikipedia.org/wiki/Scope_%28computer_science%29#Lexical_scoping_vs._dynamic_scoping>`_,
+meaning that a function's scope does not inherit from its caller's
+scope, but from the scope in which the function was defined.
+For example, in the following code the ``x`` inside ``foo`` is found
+in the global scope (and if no global variable ``x`` existed, an
+undefined variable error would be raised)::
+
+    function foo()
+      x
+    end
+
+    function bar()
+      x = 1
+      foo()
+    end
+
+    x = 2
+
+    julia> bar()
+    2
+
+If ``foo`` is instead defined inside ``bar``, then it accesses
+the local ``x`` present in that function::
+
+    function bar()
+      function foo()
+        x
+      end
+      x = 1
+      foo()
+    end
+
+    x = 2
+
+    julia> bar()
+    1
+
+The constructs that introduce new variables into the current scope
+are as follows:
 
 -  A declaration ``local x`` or ``const x`` introduces a new local variable.
 -  A declaration ``global x`` makes ``x`` in the current scope and inner
@@ -43,7 +85,7 @@ current scope are as follows:
 -  A function's arguments are introduced as new local variables into the
    function's body scope.
 -  An assignment ``x = y`` introduces a new local variable ``x`` only if
-   ``x`` is neither declared global nor explicitly introduced as local
+   ``x`` is neither declared global nor introduced as local
    by any enclosing scope before *or after* the current line of code.
 
 In the following example, there is only one ``x`` assigned both inside
@@ -131,9 +173,9 @@ even or odd::
     julia> odd(3)
     true
 
-Julia provides built-in, efficient functions to test this called
-``iseven`` and ``isodd`` so the above definitions should only be taken
-as examples.
+Julia provides built-in, efficient functions to test for oddness and evenness
+called :func:`iseven` and :func:`isodd` so the above definitions should only be
+taken as examples.
 
 Since functions can be used before they are defined, as long as they are
 defined by the time they are actually called, no syntax for forward
@@ -149,7 +191,7 @@ global scope. This is especially evident in the case of assignments:
     julia> for i = 1:1; y = 10; end
 
     julia> y
-    ERROR: y not defined
+    ERROR: UndefVarError: y not defined
 
     julia> y = 0
     0
@@ -166,6 +208,24 @@ block with the global scope, it is not necessary to declare ``global y``
 inside the loop. However, in code not entered into the interactive
 prompt this declaration would be necessary in order to modify a global
 variable.
+
+Multiple variables can be declared global using the following syntax::
+
+    function foo()
+        global x=1, y="bar", z=3
+    end
+
+    julia> foo()
+    3
+
+    julia> x
+    1
+
+    julia> y
+    "bar"
+
+    julia> z
+    3
 
 The ``let`` statement provides a different way to introduce variables.
 Unlike assignments to local variables, ``let`` statements allocate new
@@ -224,16 +284,7 @@ block without creating any new bindings:
 
 .. doctest::
 
-    julia> begin
-             local x = 1
-             begin
-               local x = 2
-             end
-             x
-           end
-    ERROR: syntax: local "x" declared twice
-
-    julia> begin
+    julia> let
              local x = 1
              let
                local x = 2
@@ -242,18 +293,16 @@ block without creating any new bindings:
            end
     1
 
-The first example is illegal because you cannot declare the same
-variable as local in the same scope twice. The second example is legal
-since the ``let`` introduces a new scope block, so the inner local ``x``
+Since ``let`` introduces a new scope block, the inner local ``x``
 is a different variable than the outer local ``x``.
 
 For Loops and Comprehensions
 ----------------------------
 
-For loops and comprehensions have a special additional behavior: any
-new variables introduced in their body scopes are freshly allocated for
-each loop iteration. Therefore these constructs are similar to ``while``
-loops with ``let`` blocks inside::
+``for`` loops and :ref:`comprehensions <comprehensions>` have a special
+additional behavior: any new variables introduced in their body scopes are
+freshly allocated for each loop iteration. Therefore these constructs are
+similar to ``while`` loops with ``let`` blocks inside::
 
     Fs = cell(2)
     for i = 1:2

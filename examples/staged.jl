@@ -1,5 +1,7 @@
+# This file is a part of Julia. License is MIT: http://julialang.org/license
+
 function add_method(gf, an, at, body)
-    argexs = { Expr(symbol("::"), an[i], at[i]) for i=1:length(an) }
+    argexs = [Expr(symbol("::"), an[i], at[i]) for i=1:length(an)]
     def = quote
         let __F__=($gf)
             function __F__($(argexs...))
@@ -15,7 +17,7 @@ macro staged(fdef)
         error("@staged: expected method definition")
     end
     fname = fdef.args[1].args[1]
-    argspec = fdef.args[1].args[2:]
+    argspec = fdef.args[1].args[2:end]
     argnames = map(x->(isa(x,Expr) ? x.args[1] : x), argspec)
     qargnames = map(x->Expr(:quote,x), argnames)
     fbody = fdef.args[2]
@@ -32,7 +34,7 @@ macro staged(fdef)
                 ($argtypes) = typeof(tuple($(argnames...)))
                 if !method_exists($gengf, $argtypes)
                     ($genbody) = apply(($expander), ($argtypes))
-                    add_method($gengf, {$(qargnames...)},
+                    add_method($gengf, Any[$(qargnames...)],
                                    $argtypes, $genbody)
                 end
                 return ($gengf)($(argnames...))

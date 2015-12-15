@@ -1,7 +1,9 @@
+# This file is a part of Julia. License is MIT: http://julialang.org/license
+
 include("../perfutil.jl")
 
 #If running from .. directory, include "shootout/" path to data file
-rpath(filename::String) = string(contains(pwd(), "shootout") ? "" : "shootout/", filename)
+rpath(filename::AbstractString) = string(contains(pwd(), "shootout") ? "" : "shootout/", filename)
 
 include("binary_trees.jl")
 @timeit binary_trees(10) "binary_trees" "Allocate and deallocate many many binary trees"
@@ -19,7 +21,7 @@ include("mandelbrot.jl")
 @timeit mandelbrot(200, rpath("mandelbrot-output-julia.txt")) "mandelbrot" "Generate Mandelbrot set portable bitmap file"
 
 include("meteor_contest.jl")
-@timeit1 meteor_contest() "meteor_contest" "Search for solutions to shape packing puzzle"
+@timeit meteor_contest() "meteor_contest" "Search for solutions to shape packing puzzle"
 
 include("nbody.jl")
 using NBody
@@ -41,3 +43,5 @@ include("revcomp.jl")
 
 include("spectralnorm.jl")
 @timeit spectralnorm() "spectralnorm" "Eigenvalue using the power method"
+
+maxrss("shootout")

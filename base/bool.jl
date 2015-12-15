@@ -1,15 +1,12 @@
+# This file is a part of Julia. License is MIT: http://julialang.org/license
+
 ## boolean conversions ##
 
 convert(::Type{Bool}, x::Bool) = x
-convert(::Type{Bool}, x::Real) = (x!=0)
+convert(::Type{Bool}, x::Real) = x==0 ? false : x==1 ? true : throw(InexactError())
 
 # promote Bool to any other numeric type
 promote_rule{T<:Number}(::Type{Bool}, ::Type{T}) = T
-
-bool(x::Bool) = x
-bool(x::Number) = convert(Bool, x)
-
-sizeof(::Type{Bool}) = 1
 
 typemin(::Type{Bool}) = false
 typemax(::Type{Bool}) = true
@@ -33,28 +30,34 @@ abs2(x::Bool) = x
 
 ## do arithmetic as Int ##
 
-+(x::Bool) =  int(x)
--(x::Bool) = -int(x)
++(x::Bool) =  Int(x)
+-(x::Bool) = -Int(x)
 
-+(x::Bool, y::Bool) = int(x) + int(y)
--(x::Bool, y::Bool) = int(x) - int(y)
++(x::Bool, y::Bool) = Int(x) + Int(y)
+-(x::Bool, y::Bool) = Int(x) - Int(y)
 *(x::Bool, y::Bool) = x & y
 ^(x::Bool, y::Bool) = x | !y
 ^(x::Integer, y::Bool) = ifelse(y, x, one(x))
 
-function +{T<:FloatingPoint}(x::Bool, y::T)
+function +{T<:AbstractFloat}(x::Bool, y::T)
     ifelse(x, one(promote_type(Bool,T)) + convert(promote_type(Bool,T),y),
            convert(promote_type(Bool,T),y))
 end
-+(y::FloatingPoint, x::Bool) = x + y
++(y::AbstractFloat, x::Bool) = x + y
 
 function *{T<:Number}(x::Bool, y::T)
     ifelse(x, convert(promote_type(Bool,T),y),
-           ifelse(signbit(y)==0, zero(promote_type(Bool,T)), -zero(promote_type(Bool,T))))
+           ifelse(signbit(y), -zero(promote_type(Bool,T)), zero(promote_type(Bool,T))))
+end
+function *{T<:Unsigned}(x::Bool, y::T)
+    ifelse(x, convert(promote_type(Bool,T),y), zero(promote_type(Bool,T)))
 end
 *(y::Number, x::Bool) = x * y
 
 div(x::Bool, y::Bool) = y ? x : throw(DivideError())
 fld(x::Bool, y::Bool) = div(x,y)
+cld(x::Bool, y::Bool) = div(x,y)
 rem(x::Bool, y::Bool) = y ? false : throw(DivideError())
 mod(x::Bool, y::Bool) = rem(x,y)
+
+promote_op(op, ::Type{Bool}, ::Type{Bool}) = typeof(op(true, true))

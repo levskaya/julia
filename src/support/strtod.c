@@ -17,8 +17,8 @@ extern "C" {
 // Cache locale object
 static int c_locale_initialized = 0;
 static locale_t c_locale;
- 
-locale_t get_c_locale()
+
+locale_t get_c_locale(void)
 {
   if(!c_locale_initialized)
   {
@@ -27,20 +27,20 @@ locale_t get_c_locale()
   }
   return c_locale;
 }
- 
-double strtod_c(const char *nptr, char **endptr)
+
+JL_DLLEXPORT double jl_strtod_c(const char *nptr, char **endptr)
 {
   return strtod_l(nptr, endptr, get_c_locale());
 }
 
-float strtof_c(const char *nptr, char **endptr)
+JL_DLLEXPORT float jl_strtof_c(const char *nptr, char **endptr)
 {
   return strtof_l(nptr, endptr, get_c_locale());
 }
 
 
 #else
-// This code path should be used for systems that do not support the strtod_l function 
+// This code path should be used for systems that do not support the strtod_l function
 // Currently this is MinGW/Windows
 
 // The following code is derived from the Python function _PyOS_ascii_strtod
@@ -98,7 +98,7 @@ double parse_inf_or_nan(const char *p, char **endptr)
 }
 
 
-double strtod_c(const char *nptr, char **endptr)
+JL_DLLEXPORT double jl_strtod_c(const char *nptr, char **endptr)
 {
     char *fail_pos;
     double val;
@@ -131,12 +131,12 @@ double strtod_c(const char *nptr, char **endptr)
        the system strtod.  This ensures that the result of an underflow
        has the correct sign.  */
     p = nptr;
-    
+
     /* parse leading spaces */
-    while (isspace(*p)) {
+    while (isspace((unsigned char)*p)) {
         p++;
     }
-    
+
     /* Process leading sign, if present */
     if (*p == '-') {
         negate = 1;
@@ -149,7 +149,7 @@ double strtod_c(const char *nptr, char **endptr)
     /* This code path is used for hex floats */
     if (*p == '0' && (*(p+1) == 'x' || *(p+1) == 'X'))
     {
-      digits_pos = p;    
+      digits_pos = p;
       p += 2;
       /* Check that what's left begins with a digit or decimal point */
       if (!isxdigit(*p) && *p != '.')
@@ -186,7 +186,7 @@ double strtod_c(const char *nptr, char **endptr)
               goto invalid_string;
           /* For the other cases, we need not convert the decimal
              point */
-      }    
+      }
     } else
     {
       /* Check that what's left begins with a digit or decimal point */
@@ -285,9 +285,9 @@ double strtod_c(const char *nptr, char **endptr)
 }
 
 
-float strtof_c(const char *nptr, char **endptr)
+JL_DLLEXPORT float jl_strtof_c(const char *nptr, char **endptr)
 {
-  return (float) strtod_c(nptr, endptr);
+  return (float) jl_strtod_c(nptr, endptr);
 }
 
 #endif

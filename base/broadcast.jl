@@ -1,11 +1,11 @@
+# This file is a part of Julia. License is MIT: http://julialang.org/license
+
 module Broadcast
 
 using ..Cartesian
-import Base.promote_eltype
-import Base.@get!
-import Base.num_bit_chunks, Base.@_msk_end, Base.unsafe_bitgetindex
-import Base.(.+), Base.(.-), Base.(.*), Base.(./), Base.(.\)
-import Base.(.==), Base.(.<), Base.(.!=), Base.(.<=)
+using Base: promote_op, promote_eltype, promote_eltype_op, @get!, _msk_end, unsafe_bitgetindex
+using Base: AddFun, SubFun, MulFun, LDivFun, RDivFun, PowFun
+import Base: .+, .-, .*, ./, .\, .//, .==, .<, .!=, .<=, .÷, .%, .<<, .>>, .^
 export broadcast, broadcast!, broadcast_function, broadcast!_function, bitbroadcast
 export broadcast_getindex, broadcast_setindex!
 
@@ -13,20 +13,20 @@ export broadcast_getindex, broadcast_setindex!
 
 droparg1(a, args...) = args
 
-longer_tuple(x::(), retx::Tuple, y::(), rety::Tuple) = retx
-longer_tuple(x::(), retx::Tuple, y::Tuple, rety::Tuple) = rety
-longer_tuple(x::Tuple, retx::Tuple, y::(), rety::Tuple) = retx
+longer_tuple(x::Tuple{}, retx::Tuple, y::Tuple{}, rety::Tuple) = retx
+longer_tuple(x::Tuple{}, retx::Tuple, y::Tuple, rety::Tuple) = rety
+longer_tuple(x::Tuple, retx::Tuple, y::Tuple{}, rety::Tuple) = retx
 longer_tuple(x::Tuple, retx::Tuple, y::Tuple, rety::Tuple) =
     longer_tuple(droparg1(x...), retx, droparg1(y...), rety)
 longer_tuple(x::Tuple, y::Tuple) = longer_tuple(x, x, y, y)
 
-longer_size(x::AbstractArray) = size(x)
-longer_size(x::AbstractArray, y::AbstractArray...) =
+longer_size(x::Union{AbstractArray,Number}) = size(x)
+longer_size(x::Union{AbstractArray,Number}, y::Union{AbstractArray,Number}...) =
     longer_tuple(size(x), longer_size(y...))
 
 # Calculate the broadcast shape of the arguments, or error if incompatible
 broadcast_shape() = ()
-function broadcast_shape(As::AbstractArray...)
+function broadcast_shape(As::Union{AbstractArray,Number}...)
     sz = longer_size(As...)
     nd = length(sz)
     bshape = ones(Int, nd)
@@ -37,7 +37,7 @@ function broadcast_shape(As::AbstractArray...)
                 if bshape[d] == 1
                     bshape[d] = n
                 elseif bshape[d] != n
-                    error("arrays could not be broadcast to a common size")
+                    throw(DimensionMismatch("arrays could not be broadcast to a common size"))
                 end
             end
         end
@@ -46,15 +46,15 @@ function broadcast_shape(As::AbstractArray...)
 end
 
 # Check that all arguments are broadcast compatible with shape
-function check_broadcast_shape(shape::Dims, As::AbstractArray...)
+function check_broadcast_shape(shape::Dims, As::Union{AbstractArray,Number}...)
     for A in As
         if ndims(A) > length(shape)
-            error("cannot broadcast array to have fewer dimensions")
+            throw(DimensionMismatch("cannot broadcast array to have fewer dimensions"))
         end
         for k in 1:ndims(A)
             n, nA = shape[k], size(A, k)
             if n != nA != 1
-                error("array could not be broadcast to match destination")
+                throw(DimensionMismatch("array could not be broadcast to match destination"))
             end
         end
     end
@@ -66,7 +66,7 @@ end
 # B must have already been set to the appropriate size.
 
 # version using cartesian indexing
-function gen_broadcast_body_cartesian(nd::Int, narrays::Int, f::Function)
+function gen_broadcast_body_cartesian(nd::Int, narrays::Int, f)
     F = Expr(:quote, f)
     quote
         @assert ndims(B) == $nd
@@ -81,7 +81,7 @@ function gen_broadcast_body_cartesian(nd::Int, narrays::Int, f::Function)
 end
 
 # version using start/next for iterating over the arguments
-function gen_broadcast_body_iter(nd::Int, narrays::Int, f::Function)
+function gen_broadcast_body_iter(nd::Int, narrays::Int, f)
     F = Expr(:quote, f)
     quote
         @assert ndims(B) == $nd
@@ -103,16 +103,34 @@ end
 const bitcache_chunks = 64 # this can be changed
 const bitcache_size = 64 * bitcache_chunks # do not change this
 
-function dumpbitcache(Bc::Vector{Uint64}, bind::Int, C::Vector{Bool})
+function bpack(z::UInt64)
+    z |= z >>> 7
+    z |= z >>> 14
+    z |= z >>> 28
+    z &= 0xFF
+    return z
+end
+
+function dumpbitcache(Bc::Vector{UInt64}, bind::Int, C::Vector{Bool})
     ind = 1
     nc = min(bitcache_chunks, length(Bc)-bind+1)
-    for i = 1:nc
-        u = uint64(1)
-        c = uint64(0)
-        for j = 1:64
-            C[ind] && (c |= u)
+    C8 = reinterpret(UInt64, C)
+    nc8 = (nc >>> 3) << 3
+    @inbounds for i = 1:nc8
+        c = UInt64(0)
+        for j = 0:8:63
+            c |= (bpack(C8[ind]) << j)
             ind += 1
-            u <<= 1
+        end
+        Bc[bind] = c
+        bind += 1
+    end
+    ind = (ind-1) << 3 + 1
+    @inbounds for i = (nc8+1):nc
+        c = UInt64(0)
+        for j = 0:63
+            c |= (UInt64(C[ind]) << j)
+            ind += 1
         end
         Bc[bind] = c
         bind += 1
@@ -120,7 +138,7 @@ function dumpbitcache(Bc::Vector{Uint64}, bind::Int, C::Vector{Bool})
 end
 
 # using cartesian indexing
-function gen_broadcast_body_cartesian_tobitarray(nd::Int, narrays::Int, f::Function)
+function gen_broadcast_body_cartesian_tobitarray(nd::Int, narrays::Int, f)
     F = Expr(:quote, f)
     quote
         @assert ndims(B) == $nd
@@ -149,7 +167,7 @@ function gen_broadcast_body_cartesian_tobitarray(nd::Int, narrays::Int, f::Funct
 end
 
 # using start/next
-function gen_broadcast_body_iter_tobitarray(nd::Int, narrays::Int, f::Function)
+function gen_broadcast_body_iter_tobitarray(nd::Int, narrays::Int, f)
     F = Expr(:quote, f)
     quote
         @assert ndims(B) == $nd
@@ -180,10 +198,10 @@ function gen_broadcast_body_iter_tobitarray(nd::Int, narrays::Int, f::Function)
     end
 end
 
-function gen_broadcast_function(genbody::Function, nd::Int, narrays::Int, f::Function)
+function gen_broadcast_function(genbody::Function, nd::Int, narrays::Int, f)
     As = [symbol("A_"*string(i)) for i = 1:narrays]
     body = genbody(nd, narrays, f)
-    @eval begin
+    @eval let
         local _F_
         function _F_(B, $(As...))
             $body
@@ -192,10 +210,10 @@ function gen_broadcast_function(genbody::Function, nd::Int, narrays::Int, f::Fun
     end
 end
 
-function gen_broadcast_function_tobitarray(genbody::Function, nd::Int, narrays::Int, f::Function)
+function gen_broadcast_function_tobitarray(genbody::Function, nd::Int, narrays::Int, f)
     As = [symbol("A_"*string(i)) for i = 1:narrays]
     body = genbody(nd, narrays, f)
-    @eval begin
+    @eval let
         local _F_
         function _F_(B::BitArray, $(As...))
             $body
@@ -205,23 +223,23 @@ function gen_broadcast_function_tobitarray(genbody::Function, nd::Int, narrays::
 end
 
 for (Bsig, Asig, gbf, gbb) in
-    ((BitArray                          , Union(Array,BitArray)                   ,
+    ((BitArray                          , Union{Array,BitArray,Number}                   ,
       :gen_broadcast_function_tobitarray, :gen_broadcast_body_iter_tobitarray     ),
-     (Any                               , Union(Array,BitArray)                   ,
+     (Any                               , Union{Array,BitArray,Number}                   ,
       :gen_broadcast_function           , :gen_broadcast_body_iter                ),
      (BitArray                          , Any                                     ,
       :gen_broadcast_function_tobitarray, :gen_broadcast_body_cartesian_tobitarray),
      (Any                               , Any                                     ,
       :gen_broadcast_function           , :gen_broadcast_body_cartesian           ))
 
-    @eval let cache = Dict{Function,Dict{Int,Dict{Int,Function}}}()
+    @eval let cache = Dict{Any,Dict{Int,Dict{Int,Any}}}()
         global broadcast!
-        function broadcast!(f::Function, B::$Bsig, As::$Asig...)
+        function broadcast!(f, B::$Bsig, As::$Asig...)
             nd = ndims(B)
             narrays = length(As)
 
-            cache_f    = @get! cache      f       Dict{Int,Dict{Int,Function}}()
-            cache_f_na = @get! cache_f    narrays Dict{Int,Function}()
+            cache_f    = @get! cache      f       Dict{Int,Dict{Int,Any}}()
+            cache_f_na = @get! cache_f    narrays Dict{Int,Any}()
             func       = @get! cache_f_na nd      $gbf($gbb, nd, narrays, f)
 
             func(B, As...)
@@ -231,85 +249,97 @@ for (Bsig, Asig, gbf, gbb) in
 end
 
 
-broadcast(f::Function, As...) = broadcast!(f, Array(promote_eltype(As...), broadcast_shape(As...)), As...)
+broadcast(f, As...) = broadcast!(f, Array(promote_eltype_op(f, As...), broadcast_shape(As...)), As...)
 
-bitbroadcast(f::Function, As...) = broadcast!(f, BitArray(broadcast_shape(As...)), As...)
+bitbroadcast(f, As...) = broadcast!(f, BitArray(broadcast_shape(As...)), As...)
 
-broadcast!_function(f::Function) = (B, As...) -> broadcast!(f, B, As...)
-broadcast_function(f::Function) = (As...) -> broadcast(f, As...)
+broadcast!_function(f) = (B, As...) -> broadcast!(f, B, As...)
+broadcast_function(f) = (As...) -> broadcast(f, As...)
 
 broadcast_getindex(src::AbstractArray, I::AbstractArray...) = broadcast_getindex!(Array(eltype(src), broadcast_shape(I...)), src, I...)
-@ngenerate N typeof(dest) function broadcast_getindex!(dest::AbstractArray, src::AbstractArray, I::NTuple{N, AbstractArray}...)
-    check_broadcast_shape(size(dest), I...)  # unnecessary if this function is never called directly
-    checkbounds(src, I...)
-    @nloops N i dest d->(@nexprs N k->(j_d_k = size(I_k, d) == 1 ? 1 : i_d)) begin
-        @nexprs N k->(@inbounds J_k = @nref N I_k d->j_d_k)
-        @inbounds (@nref N dest i) = (@nref N src J)
+@generated function broadcast_getindex!(dest::AbstractArray, src::AbstractArray, I::AbstractArray...)
+    N = length(I)
+    Isplat = Expr[:(I[$d]) for d = 1:N]
+    quote
+        @nexprs $N d->(I_d = I[d])
+        check_broadcast_shape(size(dest), $(Isplat...))  # unnecessary if this function is never called directly
+        checkbounds(src, $(Isplat...))
+        @nloops $N i dest d->(@nexprs $N k->(j_d_k = size(I_k, d) == 1 ? 1 : i_d)) begin
+            @nexprs $N k->(@inbounds J_k = @nref $N I_k d->j_d_k)
+            @inbounds (@nref $N dest i) = (@nref $N src J)
+        end
+        dest
     end
-    dest
 end
 
-@ngenerate N typeof(A) function broadcast_setindex!(A::AbstractArray, x, I::NTuple{N, AbstractArray}...)
-    checkbounds(A, I...)
-    shape = broadcast_shape(I...)
-    @nextract N shape d->(length(shape) < d ? 1 : shape[d])
-    if !isa(x, AbstractArray)
-        @nloops N i d->(1:shape_d) d->(@nexprs N k->(j_d_k = size(I_k, d) == 1 ? 1 : i_d)) begin
-            @nexprs N k->(@inbounds J_k = @nref N I_k d->j_d_k)
-            @inbounds (@nref N A J) = x
+@generated function broadcast_setindex!(A::AbstractArray, x, I::AbstractArray...)
+    N = length(I)
+    Isplat = Expr[:(I[$d]) for d = 1:N]
+    quote
+        @nexprs $N d->(I_d = I[d])
+        checkbounds(A, $(Isplat...))
+        shape = broadcast_shape($(Isplat...))
+        @nextract $N shape d->(length(shape) < d ? 1 : shape[d])
+        if !isa(x, AbstractArray)
+            @nloops $N i d->(1:shape_d) d->(@nexprs $N k->(j_d_k = size(I_k, d) == 1 ? 1 : i_d)) begin
+                @nexprs $N k->(@inbounds J_k = @nref $N I_k d->j_d_k)
+                @inbounds (@nref $N A J) = x
+            end
+        else
+            X = x
+            # To call setindex_shape_check, we need to create fake 1-d indexes of the proper size
+            @nexprs $N d->(fakeI_d = 1:shape_d)
+            @ncall $N Base.setindex_shape_check X shape
+            k = 1
+            @nloops $N i d->(1:shape_d) d->(@nexprs $N k->(j_d_k = size(I_k, d) == 1 ? 1 : i_d)) begin
+                @nexprs $N k->(@inbounds J_k = @nref $N I_k d->j_d_k)
+                @inbounds (@nref $N A J) = X[k]
+                k += 1
+            end
         end
-    else
-        X = x
-        # To call setindex_shape_check, we need to create fake 1-d indexes of the proper size
-        @nexprs N d->(fakeI_d = 1:shape_d)
-        Base.setindex_shape_check(X, (@ntuple N fakeI)...)
-        k = 1
-        @nloops N i d->(1:shape_d) d->(@nexprs N k->(j_d_k = size(I_k, d) == 1 ? 1 : i_d)) begin
-            @nexprs N k->(@inbounds J_k = @nref N I_k d->j_d_k)
-            @inbounds (@nref N A J) = X[k]
-            k += 1
-        end
+        A
     end
-    A
 end
 
 ## elementwise operators ##
 
-.*(As::AbstractArray...) = broadcast(*, As...)
+.÷(A::AbstractArray, B::AbstractArray) = broadcast(÷, A, B)
 .%(A::AbstractArray, B::AbstractArray) = broadcast(%, A, B)
+.<<(A::AbstractArray, B::AbstractArray) = broadcast(<<, A, B)
+.>>(A::AbstractArray, B::AbstractArray) = broadcast(>>, A, B)
 
-eltype_plus(As::AbstractArray...) = promote_eltype(As...)
-eltype_plus(As::AbstractArray{Bool}...) = typeof(true+true)
+eltype_plus(As::AbstractArray...) = promote_eltype_op(AddFun(), As...)
 
 .+(As::AbstractArray...) = broadcast!(+, Array(eltype_plus(As...), broadcast_shape(As...)), As...)
 
-type_minus(T, S) = promote_type(T, S)
-type_minus(::Type{Bool}, ::Type{Bool}) = typeof(true-true)
-
 function .-(A::AbstractArray, B::AbstractArray)
-    broadcast!(-, Array(type_minus(eltype(A), eltype(B)), broadcast_shape(A,B)), A, B)
+    broadcast!(-, Array(promote_op(SubFun(), eltype(A), eltype(B)), broadcast_shape(A,B)), A, B)
 end
 
-type_div(T,S) = promote_type(T,S)
-type_div{T<:Integer,S<:Integer}(::Type{T},::Type{S}) = typeof(one(T)/one(S))
-type_div{T,S}(::Type{Complex{T}},::Type{Complex{S}}) = Complex{type_div(T,S)}
-type_div{T,S}(::Type{Complex{T}},::Type{S})          = Complex{type_div(T,S)}
-type_div{T,S}(::Type{T},::Type{Complex{S}})          = Complex{type_div(T,S)}
+eltype_mul(As::AbstractArray...) = promote_eltype_op(MulFun(), As...)
+
+.*(As::AbstractArray...) = broadcast!(*, Array(eltype_mul(As...), broadcast_shape(As...)), As...)
 
 function ./(A::AbstractArray, B::AbstractArray)
-    broadcast!(/, Array(type_div(eltype(A), eltype(B)), broadcast_shape(A, B)), A, B)
+    broadcast!(/, Array(promote_op(RDivFun(), eltype(A), eltype(B)), broadcast_shape(A, B)), A, B)
 end
 
 function .\(A::AbstractArray, B::AbstractArray)
-    broadcast!(\, Array(type_div(eltype(A), eltype(B)), broadcast_shape(A, B)), A, B)
+    broadcast!(\, Array(promote_op(LDivFun(), eltype(A), eltype(B)), broadcast_shape(A, B)), A, B)
 end
 
-type_pow(T,S) = promote_type(T,S)
-type_pow{S<:Integer}(::Type{Bool},::Type{S}) = Bool
-type_pow{S}(T,::Type{Rational{S}}) = type_pow(T, type_div(S, S))
+typealias RatIntT{T<:Integer} Union{Type{Rational{T}},Type{T}}
+typealias CRatIntT{T<:Integer} Union{Type{Complex{Rational{T}}},Type{Complex{T}},Type{Rational{T}},Type{T}}
+type_rdiv{T<:Integer,S<:Integer}(::RatIntT{T}, ::RatIntT{S}) =
+    Rational{promote_type(T,S)}
+type_rdiv{T<:Integer,S<:Integer}(::CRatIntT{T}, ::CRatIntT{S}) =
+    Complex{Rational{promote_type(T,S)}}
+function .//(A::AbstractArray, B::AbstractArray)
+    broadcast!(//, Array(type_rdiv(eltype(A), eltype(B)), broadcast_shape(A, B)), A, B)
+end
 
 function .^(A::AbstractArray, B::AbstractArray)
-    broadcast!(^, Array(type_pow(eltype(A), eltype(B)), broadcast_shape(A, B)), A, B)
+    broadcast!(^, Array(promote_op(PowFun(), eltype(A), eltype(B)), broadcast_shape(A, B)), A, B)
 end
 
 ## element-wise comparison operators returning BitArray ##
@@ -320,7 +350,7 @@ for (f, scalarf, bitf, bitfbody) in ((:.==, :(==), :biteq , :(~a $ b)),
                                      (:.<=, :<=  , :bitle , :(~a | b)))
     @eval begin
         ($f)(A::AbstractArray, B::AbstractArray) = bitbroadcast($scalarf, A, B)
-        ($bitf)(a::Uint64, b::Uint64) = $bitfbody
+        ($bitf)(a::UInt64, b::UInt64) = $bitfbody
         function ($f)(A::AbstractArray{Bool}, B::AbstractArray{Bool})
             local shape
             try
@@ -336,8 +366,7 @@ for (f, scalarf, bitf, bitfbody) in ((:.==, :(==), :biteq , :(~a $ b)),
                 for i = 1:length(Fc) - 1
                     Fc[i] = ($bitf)(Ac[i], Bc[i])
                 end
-                msk = @_msk_end length(F)
-                Fc[end] = msk & ($bitf)(Ac[end], Bc[end])
+                Fc[end] = ($bitf)(Ac[end], Bc[end]) & _msk_end(F)
             end
             return F
         end
@@ -394,7 +423,7 @@ end
 (.^)(A::BitArray, B::AbstractArray{Bool}) = (B .<= A)
 (.^)(A::AbstractArray{Bool}, B::AbstractArray{Bool}) = (B .<= A)
 
-function bitcache_pow{T}(Ac::Vector{Uint64}, B::Array{T}, l::Int, ind::Int, C::Vector{Bool})
+function bitcache_pow{T}(Ac::Vector{UInt64}, B::Array{T}, l::Int, ind::Int, C::Vector{Bool})
     left = l - ind + 1
     @inbounds begin
         for j = 1:min(bitcache_size, left)

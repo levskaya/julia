@@ -1,9 +1,16 @@
+// This file is a part of Julia. License is MIT: http://julialang.org/license
+
 #ifndef DTYPES_H
 #define DTYPES_H
 
 #include <stddef.h>
 #include <stddef.h> // double include of stddef.h fixes #3421
 #include <stdint.h>
+#if defined(_COMPILER_INTEL_)
+#include <mathimf.h>
+#else
+#include <math.h>
+#endif
 
 #include "platform.h"
 
@@ -21,7 +28,7 @@
 
 #define strtoull                                            _strtoui64
 #define strtoll                                             _strtoi64
-#define strcasecmp                                          _stricmp 
+#define strcasecmp                                          _stricmp
 #define strncasecmp                                         _strnicmp
 #define snprintf                                            _snprintf
 #define stat                                                _stat
@@ -31,10 +38,6 @@
 #define STDERR_FILENO                                       2
 
 #endif /* !_COMPILER_MINGW_ */
-
-#if defined(_COMPILER_MICROSOFT_)
-#define isnan _isnan
-#endif /* _COMPILER_MICROSOFT_ */
 
 #endif /* _OS_WINDOWS_ */
 
@@ -57,13 +60,13 @@
 #ifdef _OS_WINDOWS_
 #define STDCALL __stdcall
 # ifdef LIBRARY_EXPORTS
-#  define DLLEXPORT __declspec(dllexport)
+#  define JL_DLLEXPORT __declspec(dllexport)
 # else
-#  define DLLEXPORT __declspec(dllimport)
+#  define JL_DLLEXPORT __declspec(dllimport)
 # endif
 #else
 #define STDCALL
-#define DLLEXPORT __attribute__ ((visibility("default")))
+#define JL_DLLEXPORT __attribute__ ((visibility("default")))
 #endif
 
 #ifdef _OS_LINUX_
@@ -83,32 +86,15 @@
 #endif
 
 #ifdef _OS_WINDOWS_
-#define __LITTLE_ENDIAN	1234
-#define __BIG_ENDIAN	4321
-#define __PDP_ENDIAN	3412
+#define __LITTLE_ENDIAN    1234
+#define __BIG_ENDIAN       4321
+#define __PDP_ENDIAN       3412
 #define __BYTE_ORDER       __LITTLE_ENDIAN
 #define __FLOAT_WORD_ORDER __LITTLE_ENDIAN
-#define LITTLE_ENDIAN  __LITTLE_ENDIAN
-#define BIG_ENDIAN     __BIG_ENDIAN
-#define PDP_ENDIAN     __PDP_ENDIAN
-#define BYTE_ORDER     __BYTE_ORDER
-#endif
-
-#if (__STDC_VERSION__ >= 199901L) || defined(__GNUG__)
-// argument counting macros for C99
-#define VA_ARG_N(_1, _2, _3, _4, _5, _6, _7, _8, _9,_10,  \
-                 _11,_12,_13,_14,_15,_16,_17,_18,_19,_20, \
-                 _21,_22,_23,_24,_25,_26,_27,_28,_29,_30, \
-                 _31,_32,_33,_34,_35,_36,_37,_38,_39,_40, \
-                 _41,_42,_43,_44,_45,_46,_47,_48,_49,_50, \
-                 _51,_52,_53,_54,_55,_56,_57,_58,_59,_60, \
-                 _61,_62,_63,N,...) N
-#define VA_RSEQ_N() 63,62,61,60,59,58,57,56,55,54,53,52,51,50, \
-                    49,48,47,46,45,44,43,42,41,40,39,38,37,36, \
-                    35,34,33,32,31,30,29,28,27,26,25,24,23,22, \
-                    21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0
-#define VA_NARG_(...) VA_ARG_N(__VA_ARGS__)
-#define VA_NARG(...) VA_NARG_(__VA_ARGS__,VA_RSEQ_N())
+#define LITTLE_ENDIAN      __LITTLE_ENDIAN
+#define BIG_ENDIAN         __BIG_ENDIAN
+#define PDP_ENDIAN         __PDP_ENDIAN
+#define BYTE_ORDER         __BYTE_ORDER
 #endif
 
 #define LLT_ALLOC(n) malloc(n)
@@ -122,8 +108,28 @@
 #  define STATIC_INLINE static __inline
 #  define INLINE __inline
 #else
-# define STATIC_INLINE static inline
-# define INLINE inline
+#  define STATIC_INLINE static inline
+#  define INLINE inline
+#endif
+
+#if defined(_OS_WINDOWS_) && !defined(_COMPILER_MINGW_)
+#  define NOINLINE __declspec(noinline)
+#  define NOINLINE_DECL(f) __declspec(noinline) f
+#else
+#  define NOINLINE __attribute__((noinline))
+#  define NOINLINE_DECL(f) f __attribute__((noinline))
+#endif
+
+#ifdef _COMPILER_MICROSOFT_
+# ifdef _P64
+#  define JL_ATTRIBUTE_ALIGN_PTRSIZE(x) __declspec(align(8)) x
+# else
+#  define JL_ATTRIBUTE_ALIGN_PTRSIZE(x) __declspec(align(4)) x
+# endif
+#elif defined(__GNUC__)
+#  define JL_ATTRIBUTE_ALIGN_PTRSIZE(x) x __attribute__ ((aligned (sizeof(void*))))
+#else
+#  define JL_ATTRIBUTE_ALIGN_PTRSIZE(x)
 #endif
 
 typedef int bool_t;
@@ -173,14 +179,14 @@ typedef uptrint_t u_ptrint_t;
 #define S32_MIN    (-S32_MAX - 1L)
 #define BIT31      0x80000000
 
-extern double D_PNAN;
-extern double D_NNAN;
-extern double D_PINF;
-extern double D_NINF;
-extern float  F_PNAN;
-extern float  F_NNAN;
-extern float  F_PINF;
-extern float  F_NINF;
+#define D_PNAN ((double)+NAN)
+#define D_NNAN ((double)-NAN)
+#define D_PINF ((double)+INFINITY)
+#define D_NINF ((double)-INFINITY)
+#define F_PNAN ((float)+NAN)
+#define F_NNAN ((float)-NAN)
+#define F_PINF ((float)+INFINITY)
+#define F_NINF ((float)-INFINITY)
 
 typedef enum { T_INT8, T_UINT8, T_INT16, T_UINT16, T_INT32, T_UINT32,
                T_INT64, T_UINT64, T_FLOAT, T_DOUBLE } numerictype_t;

@@ -307,7 +307,7 @@ static value_t fl_time_now(value_t *args, u_int32_t nargs)
 {
     argcount("time.now", nargs, 0);
     (void)args;
-    return mk_double(clock_now());
+    return mk_double(jl_clock_now());
 }
 
 static value_t fl_path_cwd(value_t *args, uint32_t nargs)
@@ -372,7 +372,7 @@ static value_t fl_os_setenv(value_t *args, uint32_t nargs)
 #if defined (_OS_WINDOWS_)
         result = SetEnvironmentVariable(name,val);
 #else
-		result = setenv(name, val, 1);
+        result = setenv(name, val, 1);
 #endif
     }
     if (result != 0)

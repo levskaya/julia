@@ -6,7 +6,7 @@
 
 #include "platform.h"
 #include "libsupport.h"
-#include "../../deps/libuv/include/uv.h"
+#include "uv.h"
 
 //#define MEMDEBUG
 //#define MEMDEBUG2
@@ -38,10 +38,7 @@ typedef struct _symbol_t {
     // below fields are private
     struct _symbol_t *left;
     struct _symbol_t *right;
-    union {
-        char name[1];
-        void *_pad;    // ensure field aligned to pointer size
-    };
+    JL_ATTRIBUTE_ALIGN_PTRSIZE(char name[]);
 } symbol_t;
 
 typedef struct {
@@ -64,7 +61,7 @@ typedef struct {
 #define tag(x) ((x)&0x7)
 #define ptr(x) ((void*)((x)&(~(value_t)0x7)))
 #define tagptr(p,t) (((value_t)(p)) | (t))
-#define fixnum(x) ((value_t)(((fixnum_t)(x))<<2))
+#define fixnum(x) ((value_t)(((uptrint_t)(x))<<2))
 #define numval(x)  (((fixnum_t)(x))>>2)
 #if NBITS==64
 #define fits_fixnum(x) (((x)>>61) == 0 || (~((x)>>61)) == 0)
@@ -214,7 +211,7 @@ void bounds_error(char *fname, value_t arr, value_t ind) __attribute__ ((__noret
 void fl_savestate(fl_exception_context_t *_ctx);
 void fl_restorestate(fl_exception_context_t *_ctx);
 
-extern value_t ArgError, IOError, KeyError, MemoryError, EnumerationError;
+extern value_t ArgError, IOError, KeyError, OutOfMemoryError, EnumerationError;
 extern value_t UnboundError;
 
 static inline void argcount(char *fname, uint32_t nargs, uint32_t c)
@@ -346,6 +343,7 @@ size_t cvalue_arraylen(value_t v);
 value_t size_wrap(size_t sz);
 size_t tosize(value_t n, char *fname);
 value_t cvalue_string(size_t sz);
+value_t cvalue_static_cstrn(const char *str, size_t n);
 value_t cvalue_static_cstring(const char *str);
 value_t string_from_cstr(char *str);
 value_t string_from_cstrn(char *str, size_t n);
@@ -386,6 +384,11 @@ value_t cvalue_wchar(value_t *args, uint32_t nargs);
 
 void fl_init(size_t initial_heapsize);
 int fl_load_system_image(value_t ios);
+int fl_load_system_image_str(char* str, size_t len);
+
+/* julia extensions */
+JL_DLLEXPORT int jl_id_char(uint32_t wc);
+JL_DLLEXPORT int jl_id_start_char(uint32_t wc);
 
 #ifdef __cplusplus
 }

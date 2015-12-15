@@ -1,12 +1,35 @@
-## core stream types ##
+# This file is a part of Julia. License is MIT: http://julialang.org/license
 
-# the first argument to any IO MUST be a POINTER (to a JL_STREAM) or using show on it will cause memory corruption
+# Generic IO stubs
 
-# Generic IO functions
+lock(::IO) = nothing
+unlock(::IO) = nothing
+reseteof(x::IO) = nothing
+
+const SZ_UNBUFFERED_IO = 65536
+buffer_writes(x::IO, bufsize=SZ_UNBUFFERED_IO) = nothing
+
+function isopen end
+function close end
+function flush end
+function wait_connected end
+function wait_readnb end
+function wait_readbyte end
+function wait_close end
+function nb_available end
+function readavailable end
+function isreadable end
+function iswritable end
+function copy end
+function eof end
+
+# all subtypes should implement this
+read(s::IO, ::Type{UInt8}) = error(typeof(s)," does not support byte I/O")
+write(s::IO, x::UInt8) = error(typeof(s)," does not support byte I/O")
 
 ## byte-order mark, ntoh & hton ##
 
-const ENDIAN_BOM = reinterpret(Uint32,uint8([1:4]))[1]
+const ENDIAN_BOM = reinterpret(UInt32,UInt8[1:4;])[1]
 
 if ENDIAN_BOM == 0x01020304
     ntoh(x) = x
@@ -26,131 +49,148 @@ isreadonly(s) = isreadable(s) && !iswritable(s)
 
 ## binary I/O ##
 
-# all subtypes should implement this
-write(s::IO, x::Uint8) = error(typeof(s)," does not support byte I/O")
-
 write(io::IO, x) = throw(MethodError(write, (io, x)))
-write(io::IO, xs...) = for x in xs write(io, x) end
+function write(io::IO, xs...)
+    local written::Int = 0
+    for x in xs
+        written += write(io, x)
+    end
+    written
+end
 
 if ENDIAN_BOM == 0x01020304
-    function write(s::IO, x::Integer)
+    function write(s::IO, x::Union{Int8,Int16,UInt16,Int32,UInt32,Int64,UInt64,Int128,UInt128})
         sz = sizeof(x)
+        local written::Int = 0
         for n = sz:-1:1
-            write(s, uint8((x>>>((n-1)<<3))))
+            written += write(s, (x>>>((n-1)<<3))%UInt8)
         end
-        sz
+        return written
     end
 else
-    function write(s::IO, x::Integer)
+    function write(s::IO, x::Union{Int8,Int16,UInt16,Int32,UInt32,Int64,UInt64,Int128,UInt128})
         sz = sizeof(x)
+        local written::Int = 0
         for n = 1:sz
-            write(s, uint8((x>>>((n-1)<<3))))
+            written += write(s, (x>>>((n-1)<<3))%UInt8)
         end
-        sz
+        return written
     end
 end
 
-write(s::IO, x::Bool)    = write(s, uint8(x))
+write(s::IO, x::Bool)    = write(s, UInt8(x))
 write(s::IO, x::Float16) = write(s, reinterpret(Int16,x))
 write(s::IO, x::Float32) = write(s, reinterpret(Int32,x))
 write(s::IO, x::Float64) = write(s, reinterpret(Int64,x))
 
+write(to::IO, p::Ptr) = write(to, convert(UInt, p))
+
 function write(s::IO, a::AbstractArray)
     nb = 0
-    for i = 1:length(a)
+    for i in eachindex(a)
         nb += write(s, a[i])
     end
-    nb
+    return nb
 end
 
-function write(s::IO, c::Char)
+function write(s::IO, ch::Char)
+    c = reinterpret(UInt32, ch)
     if c < 0x80
-        write(s, uint8(c))
-        return 1
+        return write(s, c%UInt8)
     elseif c < 0x800
-        write(s, uint8(( c >> 6          ) | 0xC0))
-        write(s, uint8(( c        & 0x3F ) | 0x80))
-        return 2
+        return (write(s, (( c >> 6          ) | 0xC0)%UInt8)) +
+               (write(s, (( c        & 0x3F ) | 0x80)%UInt8))
     elseif c < 0x10000
-        write(s, uint8(( c >> 12         ) | 0xE0))
-        write(s, uint8(((c >> 6)  & 0x3F ) | 0x80))
-        write(s, uint8(( c        & 0x3F ) | 0x80))
-        return 3
+        return (write(s, (( c >> 12         ) | 0xE0)%UInt8)) +
+               (write(s, (((c >> 6)  & 0x3F ) | 0x80)%UInt8)) +
+               (write(s, (( c        & 0x3F ) | 0x80)%UInt8))
     elseif c < 0x110000
-        write(s, uint8(( c >> 18         ) | 0xF0))
-        write(s, uint8(((c >> 12) & 0x3F ) | 0x80))
-        write(s, uint8(((c >> 6)  & 0x3F ) | 0x80))
-        write(s, uint8(( c        & 0x3F ) | 0x80))
-        return 4
+        return (write(s, (( c >> 18         ) | 0xF0)%UInt8)) +
+               (write(s, (((c >> 12) & 0x3F ) | 0x80)%UInt8)) +
+               (write(s, (((c >> 6)  & 0x3F ) | 0x80)%UInt8)) +
+               (write(s, (( c        & 0x3F ) | 0x80)%UInt8))
     else
         return write(s, '\ufffd')
     end
 end
 
 function write(s::IO, p::Ptr, n::Integer)
+    local written::Int = 0
     for i=1:n
-        write(s, unsafe_load(p, i))
+        written += write(s, unsafe_load(p, i))
     end
-    n
+    return written
 end
 
 function write(io::IO, s::Symbol)
-    pname = convert(Ptr{Uint8}, s)
-    write(io, pname, int(ccall(:strlen, Csize_t, (Ptr{Uint8},), pname)))
+    pname = unsafe_convert(Ptr{UInt8}, s)
+    return write(io, pname, Int(ccall(:strlen, Csize_t, (Cstring,), pname)))
 end
 
-# all subtypes should implement this
-read(s::IO, x::Type{Uint8}) = error(typeof(s)," does not support byte I/O")
+read(s::IO, ::Type{Int8}) = reinterpret(Int8, read(s,UInt8))
 
-function read{T <: Integer}(s::IO, ::Type{T})
+function read{T <: Union{Int16,UInt16,Int32,UInt32,Int64,UInt64,Int128,UInt128}}(s::IO, ::Type{T})
     x = zero(T)
     for n = 1:sizeof(x)
-        x |= (convert(T,read(s,Uint8))<<((n-1)<<3))
+        x |= (convert(T,read(s,UInt8))<<((n-1)<<3))
     end
     return x
 end
 
-read(s::IO, ::Type{Bool})    = (read(s,Uint8)!=0)
+read(s::IO, ::Type{Bool})    = (read(s,UInt8)!=0)
 read(s::IO, ::Type{Float16}) = box(Float16,unbox(Int16,read(s,Int16)))
 read(s::IO, ::Type{Float32}) = box(Float32,unbox(Int32,read(s,Int32)))
 read(s::IO, ::Type{Float64}) = box(Float64,unbox(Int64,read(s,Int64)))
 
-read{T}(s::IO, t::Type{T}, d1::Int, dims::Int...) =
-    read(s, t, tuple(d1,dims...))
+read{T}(s::IO, ::Type{Ptr{T}}) = convert(Ptr{T}, read(s,UInt))
+
+read{T}(s::IO, t::Type{T}, d1::Int, dims::Int...) = read(s, t, tuple(d1,dims...))
 read{T}(s::IO, t::Type{T}, d1::Integer, dims::Integer...) =
-    read(s, t, map(int,tuple(d1,dims...)))
+    read(s, t, convert(Tuple{Vararg{Int}},tuple(d1,dims...)))
 
 read{T}(s::IO, ::Type{T}, dims::Dims) = read!(s, Array(T, dims))
 
+function read!(s::IO, a::Vector{UInt8})
+    for i in 1:length(a)
+        a[i] = read(s, UInt8)
+    end
+    return a
+end
+
 function read!{T}(s::IO, a::Array{T})
-    for i = 1:length(a)
-        a[i] = read(s, T)
+    if isbits(T)
+        nb::Int = length(a) * sizeof(T)
+        read!(s, reinterpret(UInt8, a, (nb,)))
+    else
+        for i in eachindex(a)
+            a[i] = read(s, T)
+        end
     end
     return a
 end
 
 function read(s::IO, ::Type{Char})
-    ch = read(s, Uint8)
+    ch = read(s, UInt8)
     if ch < 0x80
-        return char(ch)
+        return Char(ch)
     end
 
     # mimic utf8.next function
     trailing = Base.utf8_trailing[ch+1]
-    c::Uint32 = 0
+    c::UInt32 = 0
     for j = 1:trailing
         c += ch
         c <<= 6
-        ch = read(s, Uint8)
+        ch = read(s, UInt8)
     end
     c += ch
     c -= Base.utf8_offset[trailing+1]
-    char(c)
+    Char(c)
 end
 
 function readuntil(s::IO, delim::Char)
-    if delim < 0x80
-        data = readuntil(s, uint8(delim))
+    if delim < Char(0x80)
+        data = readuntil(s, delim%UInt8)
         enc = byte_string_classify(data)
         return (enc==1) ? ASCIIString(data) : UTF8String(data)
     end
@@ -177,329 +217,14 @@ function readuntil{T}(s::IO, delim::T)
     out
 end
 
-readline(s::IO) = readuntil(s, '\n')
-readchomp(x) = chomp!(readall(x))
-
-# read up to nb bytes into nb, returning # bytes read
-function readbytes!(s::IO, b::AbstractArray{Uint8}, nb=length(b))
-    olb = lb = length(b)
-    nr = 0
-    while nr < nb && !eof(s)
-        a = read(s, Uint8)
-        nr += 1
-        if nr > lb
-            lb = nr * 2
-            resize!(b, lb)
-        end
-        b[nr] = a
-    end
-    if lb > olb
-        resize!(b, nr) # shrink to just contain input data if was resized
-    end
-    return nr
-end
-
-# read up to nb bytes from s, returning a Vector{Uint8} of bytes read.
-function readbytes(s::IO, nb=typemax(Int))
-    b = Array(Uint8, min(nb, 65536))
-    nr = readbytes!(s, b, nb)
-    resize!(b, nr)
-end
-
-function readall(s::IO)
-    b = readbytes(s)
-    return is_valid_ascii(b) ? ASCIIString(b) : UTF8String(b)
-end
-readall(filename::String) = open(readall, filename)
-
-## high-level iterator interfaces ##
-
-type EachLine
-    stream::IO
-    ondone::Function
-    EachLine(stream) = EachLine(stream, ()->nothing)
-    EachLine(stream, ondone) = new(stream, ondone)
-end
-eachline(stream::IO) = EachLine(stream)
-
-start(itr::EachLine) = nothing
-function done(itr::EachLine, nada)
-    if !eof(itr.stream)
-        return false
-    end
-    itr.ondone()
-    true
-end
-next(itr::EachLine, nada) = (readline(itr.stream), nothing)
-eltype(itr::EachLine) = ByteString
-
-readlines(s=STDIN) = collect(eachline(s))
-
-
-## IOStream
-
-const sizeof_ios_t = int(ccall(:jl_sizeof_ios_t, Int32, ()))
-
-type IOStream <: IO
-    handle::Ptr{Void}
-    ios::Array{Uint8,1}
-    name::String
-
-    IOStream(name::String, buf::Array{Uint8,1}) = new(pointer(buf), buf, name)
-end
-# TODO: delay adding finalizer, e.g. for memio with a small buffer, or
-# in the case where we takebuf it.
-function IOStream(name::String, finalize::Bool)
-    buf = zeros(Uint8,sizeof_ios_t)
-    x = IOStream(name, buf)
-    if finalize
-        finalizer(x, close)
-    end
-    return x
-end
-IOStream(name::String) = IOStream(name, true)
-
-convert(T::Type{Ptr{Void}}, s::IOStream) = convert(T, s.ios)
-show(io::IO, s::IOStream) = print(io, "IOStream(", s.name, ")")
-fd(s::IOStream) = int(ccall(:jl_ios_fd, Clong, (Ptr{Void},), s.ios))
-close(s::IOStream) = ccall(:ios_close, Void, (Ptr{Void},), s.ios)
-isopen(s::IOStream) = bool(ccall(:ios_isopen, Cint, (Ptr{Void},), s.ios))
-function flush(s::IOStream)
-    sigatomic_begin()
-    systemerror("flush", ccall(:ios_flush, Cint, (Ptr{Void},), s.ios) != 0)
-    sigatomic_end()
-    s
-end
-iswritable(s::IOStream) = bool(ccall(:ios_get_writable, Cint, (Ptr{Void},), s.ios))
-isreadable(s::IOStream) = bool(ccall(:ios_get_readable, Cint, (Ptr{Void},), s.ios))
-modestr(s::IO) = modestr(isreadable(s), iswritable(s))
-modestr(r::Bool, w::Bool) = r ? (w ? "r+" : "r") : (w ? "w" : error("Neither readable nor writable"))
-
-function truncate(s::IOStream, n::Integer)
-    systemerror("truncate", ccall(:ios_trunc, Int32, (Ptr{Void}, Uint), s.ios, n) != 0)
-    return s
-end
-
-function seek(s::IOStream, n::Integer)
-    ret = ccall(:ios_seek, FileOffset, (Ptr{Void}, FileOffset), s.ios, n)
-    systemerror("seek", ret == -1)
-    ret < -1 && error("seek failed")
-    return s
-end
-
-seekstart(s::IO) = seek(s,0)
-
-function seekend(s::IOStream)
-    systemerror("seekend", ccall(:ios_seek_end, FileOffset, (Ptr{Void},), s.ios) != 0)
-    return s
-end
-
-function skip(s::IOStream, delta::Integer)
-    ret = ccall(:ios_skip, FileOffset, (Ptr{Void}, FileOffset), s.ios, delta)
-    systemerror("skip", ret == -1)
-    ret < -1 && error("skip failed")
-    return s
-end
-
-function position(s::IOStream)
-    pos = ccall(:ios_pos, FileOffset, (Ptr{Void},), s.ios)
-    systemerror("position", pos == -1)
-    return pos
-end
-
-eof(s::IOStream) = bool(ccall(:jl_ios_eof, Int32, (Ptr{Void},), s.ios))
-
-# For interfacing with C FILE* functions
-
-
-immutable CFILE
-    ptr::Ptr{Void}
-end
-
-function CFILE(s::IO)
-    @unix_only FILEp = ccall(:fdopen, Ptr{Void}, (Cint, Ptr{Uint8}), convert(Cint, fd(s)), modestr(s))
-    @windows_only FILEp = ccall(:_fdopen, Ptr{Void}, (Cint, Ptr{Uint8}), convert(Cint, fd(s)), modestr(s))
-    systemerror("fdopen", FILEp == C_NULL)
-    seek(CFILE(FILEp), position(s))
-end
-
-convert(::Type{CFILE}, s::IO) = CFILE(s)
-
-function seek(h::CFILE, offset::Integer)
-    systemerror("fseek", ccall(:fseek, Cint, (Ptr{Void}, Clong, Cint),
-                               h.ptr, convert(Clong, offset), int32(0)) != 0)
-    h
-end
-
-position(h::CFILE) = ccall(:ftell, Clong, (Ptr{Void},), h.ptr)
-
-## constructing and opening streams ##
-
-# "own" means the descriptor will be closed with the IOStream
-function fdio(name::String, fd::Integer, own::Bool=false)
-    s = IOStream(name)
-    ccall(:ios_fd, Ptr{Void}, (Ptr{Void}, Clong, Int32, Int32),
-          s.ios, fd, 0, own);
-    return s
-end
-fdio(fd::Integer, own::Bool=false) = fdio(string("<fd ",fd,">"), fd, own)
-
-function open(fname::String, rd::Bool, wr::Bool, cr::Bool, tr::Bool, ff::Bool)
-    s = IOStream(string("<file ",fname,">"))
-    systemerror("opening file $fname",
-                ccall(:ios_file, Ptr{Void},
-                      (Ptr{Uint8}, Ptr{Uint8}, Int32, Int32, Int32, Int32),
-                      s.ios, fname, rd, wr, cr, tr) == C_NULL)
-    if ff
-        systemerror("seeking to end of file $fname", ccall(:ios_seek_end, FileOffset, (Ptr{Void},), s.ios) != 0)
-    end
-    return s
-end
-open(fname::String) = open(fname, true, false, false, false, false)
-
-function open(fname::String, mode::String)
-    mode == "r"  ? open(fname, true , false, false, false, false) :
-    mode == "r+" ? open(fname, true , true , false, false, false) :
-    mode == "w"  ? open(fname, false, true , true , true , false) :
-    mode == "w+" ? open(fname, true , true , true , true , false) :
-    mode == "a"  ? open(fname, false, true , true , false, true ) :
-    mode == "a+" ? open(fname, true , true , true , false, true ) :
-    error("invalid open mode: ", mode)
-end
-
-function open(f::Function, args...)
-    io = open(args...)
-    try
-        f(io)
-    finally
-        close(io)
-    end
-end
-
-## low-level calls ##
-
-write(s::IOStream, b::Uint8) = int(ccall(:ios_putc, Int32, (Uint8, Ptr{Void}), b, s.ios))
-
-function write{T}(s::IOStream, a::Array{T})
-    if isbits(T)
-        if !iswritable(s)
-            error("attempt to write to a read-only IOStream")
-        end
-        int(ccall(:ios_write, Uint, (Ptr{Void}, Ptr{Void}, Uint),
-                  s.ios, a, length(a)*sizeof(T)))
-    else
-        invoke(write, (IO, Array), s, a)
-    end
-end
-
-function write(s::IOStream, p::Ptr, nb::Integer)
-    if !iswritable(s)
-        error("attempt to write to a read-only IOStream")
-    end
-    int(ccall(:ios_write, Uint, (Ptr{Void}, Ptr{Void}, Uint), s.ios, p, nb))
-end
-
-function write{T,N,A<:Array}(s::IOStream, a::SubArray{T,N,A})
-    if !isbits(T) || stride(a,1)!=1
-        return invoke(write, (Any, AbstractArray), s, a)
-    end
-    colsz = size(a,1)*sizeof(T)
-    if N<=1
-        return write(s, pointer(a, 1), colsz)
-    else
-        cartesianmap((idxs...)->write(s, pointer(a, idxs), colsz),
-                     tuple(1, size(a)[2:end]...))
-        return colsz*trailingsize(a,2)
-    end
-end
-
-# num bytes available without blocking
-nb_available(s::IOStream) = ccall(:jl_nb_available, Int32, (Ptr{Void},), s.ios)
-
-function read(s::IOStream, ::Type{Uint8})
-    b = ccall(:ios_getc, Int32, (Ptr{Void},), s.ios)
-    if b == -1
-        throw(EOFError())
-    end
-    uint8(b)
-end
-
-function read!{T}(s::IOStream, a::Array{T})
-    if isbits(T)
-        nb = length(a)*sizeof(T)
-        if ccall(:ios_readall, Uint,
-                 (Ptr{Void}, Ptr{Void}, Uint), s.ios, a, nb) < nb
-            throw(EOFError())
-        end
-    else
-        invoke(read!, (IO, Array), s, a)
-    end
-    a
-end
-
-## text I/O ##
-
-function write(s::IOStream, c::Char)
-    if !iswritable(s)
-        error("attempt to write to a read-only IOStream")
-    end
-    int(ccall(:ios_pututf8, Int32, (Ptr{Void}, Char), s.ios, c))
-end
-read(s::IOStream, ::Type{Char}) = ccall(:jl_getutf8, Char, (Ptr{Void},), s.ios)
-
-takebuf_string(s::IOStream) =
-    ccall(:jl_takebuf_string, ByteString, (Ptr{Void},), s.ios)
-
-takebuf_array(s::IOStream) =
-    ccall(:jl_takebuf_array, Vector{Uint8}, (Ptr{Void},), s.ios)
-
-function takebuf_raw(s::IOStream)
-    sz = position(s)
-    buf = ccall(:jl_takebuf_raw, Ptr{Uint8}, (Ptr{Void},), s.ios)
-    return buf, sz
-end
-
-function sprint(size::Integer, f::Function, args...)
-    s = IOBuffer(Array(Uint8,size), true, true)
-    truncate(s,0)
-    f(s, args...)
-    takebuf_string(s)
-end
-
-sprint(f::Function, args...) = sprint(0, f, args...)
-
-write(x) = write(STDOUT::IO, x)
-
-function readuntil(s::IOStream, delim::Uint8)
-    ccall(:jl_readuntil, Array{Uint8,1}, (Ptr{Void}, Uint8), s.ios, delim)
-end
-
-function readbytes!(s::IOStream, b::Array{Uint8}, nb=length(b))
-    olb = lb = length(b)
-    nr = 0
-    while !eof(s) && nr < nb
-        if lb < nr+1
-            lb = max(65536, (nr+1) * 2)
-            resize!(b, lb)
-        end
-        nr += int(ccall(:ios_readall, Uint,
-                        (Ptr{Void}, Ptr{Void}, Uint),
-                        s.ios, pointer(b, nr+1), min(lb-nr, nb-nr)))
-    end
-    if lb > olb
-        resize!(b, nr) # shrink to just contain input data if was resized
-    end
-    return nr
-end
-
 # based on code by Glen Hertz
-function readuntil(s::IO, t::String)
+function readuntil(s::IO, t::AbstractString)
     l = length(t)
     if l == 0
         return ""
     end
     if l > 40
-        warn("readuntil(IO,String) will perform poorly with a long string")
+        warn("readuntil(IO,AbstractString) will perform poorly with a long string")
     end
     out = IOBuffer()
     m = Array(Char, l)  # last part of stream to match
@@ -525,33 +250,87 @@ function readuntil(s::IO, t::String)
     return takebuf_string(out)
 end
 
-## Character streams ##
-const _chtmp = Array(Char, 1)
-function peekchar(s::IOStream)
-    if ccall(:ios_peekutf8, Int32, (Ptr{Void}, Ptr{Char}), s, _chtmp) < 0
-        return char(-1)
-    end
-    return _chtmp[1]
-end
+readline() = readline(STDIN)
+readline(s::IO) = readuntil(s, '\n')
+readchomp(x) = chomp!(readall(x))
 
-function peek(s::IOStream)
-    ccall(:ios_peekc, Int32, (Ptr{Void},), s)
-end
-
-function skipchars(s::IOStream, pred; linecomment::Char=char(0xffffffff))
-    ch = peekchar(s); status = int(ch)
-    while status >= 0 && (pred(ch) || ch == linecomment)
-        if ch == linecomment
-            readline(s)
-        else
-            read(s, Char)  # advance one character
+# read up to nb bytes into nb, returning # bytes read
+function readbytes!(s::IO, b::AbstractArray{UInt8}, nb=length(b))
+    olb = lb = length(b)
+    nr = 0
+    while nr < nb && !eof(s)
+        a = read(s, UInt8)
+        nr += 1
+        if nr > lb
+            lb = nr * 2
+            resize!(b, lb)
         end
-        ch = peekchar(s); status = int(ch)
+        b[nr] = a
     end
-    return s
+    if lb > olb
+        resize!(b, nr) # shrink to just contain input data if was resized
+    end
+    return nr
 end
 
-# BitArray I/O
+# read up to nb bytes from s, returning a Vector{UInt8} of bytes read.
+function readbytes(s::IO, nb=typemax(Int))
+    b = Array(UInt8, nb == typemax(Int) ? 1024 : nb)
+    nr = readbytes!(s, b, nb)
+    resize!(b, nr)
+end
 
-write(s::IO, B::BitArray) = write(s, B.chunks)
-read!(s::IO, B::BitArray) = read!(s, B.chunks)
+function readall(s::IO)
+    b = readbytes(s)
+    return isvalid(ASCIIString, b) ? ASCIIString(b) : UTF8String(b)
+end
+readall(filename::AbstractString) = open(readall, filename)
+
+## high-level iterator interfaces ##
+
+type EachLine
+    stream::IO
+    ondone::Function
+    EachLine(stream) = EachLine(stream, ()->nothing)
+    EachLine(stream, ondone) = new(stream, ondone)
+end
+eachline(stream::IO) = EachLine(stream)
+
+start(itr::EachLine) = nothing
+function done(itr::EachLine, nada)
+    if !eof(itr.stream)
+        return false
+    end
+    itr.ondone()
+    true
+end
+next(itr::EachLine, nada) = (readline(itr.stream), nothing)
+eltype(::Type{EachLine}) = ByteString
+
+readlines(s=STDIN) = collect(eachline(s))
+
+# IOStream Marking
+
+# Note that these functions expect that io.mark exists for
+# the concrete IO type.  This may not be true for IO types
+# not in base.
+
+function mark(io::IO)
+    io.mark = position(io)
+end
+
+function unmark(io::IO)
+    !ismarked(io) && return false
+    io.mark = -1
+    return true
+end
+
+function reset{T<:IO}(io::T)
+    ismarked(io) || throw(ArgumentError("$(T) not marked"))
+    m = io.mark
+    seek(io, m)
+    io.mark = -1 # must be after seek, or seek may fail
+    return m
+end
+
+ismarked(io::IO) = io.mark >= 0
